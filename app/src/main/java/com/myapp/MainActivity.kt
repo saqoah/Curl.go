@@ -1,4 +1,4 @@
-package com.example.curlrunner
+package com.myapp
 
 import android.content.ClipData
 import android.content.ClipboardManager
