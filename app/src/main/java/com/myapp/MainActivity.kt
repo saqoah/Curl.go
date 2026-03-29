@@ -1,4 +1,4 @@
-package com.myapp
+package com.example.curlrunner
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -265,7 +265,7 @@ class MainActivity : ComponentActivity() {
         val current = StringBuilder()
         var i = 0
         // Strip leading 'curl ' if pasted with it; we re-add programmatically
-        val s = input.trimStart()
+        val s = input.trimStart().replace("\\\n", " ")
         while (i < s.length) {
             when {
                 s[i] == '\'' -> {
