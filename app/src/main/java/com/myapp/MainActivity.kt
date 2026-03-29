@@ -13,6 +13,9 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.*
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
 
@@ -92,7 +95,7 @@ class MainActivity : ComponentActivity() {
 
         // curl input
         curlInput = EditText(this).apply {
-            hint = "curl https://example.com"
+            hint = "curl -X POST https://... -H \"...\" -d '{...}'"
             setTextColor(WHITE)
             setHintTextColor(MUTED)
             setBackgroundColor(CARD)
@@ -112,15 +115,13 @@ class MainActivity : ComponentActivity() {
 
         // Run / Clear row
         val actionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-
-        runButton = button("▶  Run", ACCENT) { onRunPressed() }
-        clearButton = button("Clear", CARD) { onClearPressed() }
-
+        runButton   = button("▶  Run", ACCENT) { onRunPressed() }
+        clearButton = button("Clear",  CARD)   { onClearPressed() }
         actionRow.addView(runButton,   LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(8) })
         actionRow.addView(clearButton, LinearLayout.LayoutParams(0, dp(44), 1f))
         layout.addView(actionRow, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(14)))
 
-        // Status line
+        // Status
         statusText = TextView(this).apply {
             text = "Ready"
             setTextColor(MUTED)
@@ -147,7 +148,7 @@ class MainActivity : ComponentActivity() {
         resultHeader.addView(copyButton, LinearLayout.LayoutParams(dp(72), dp(32)))
         layout.addView(resultHeader, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(6)))
 
-        // Result output (scrollable independently)
+        // Result output
         scrollView = ScrollView(this).apply { setBackgroundColor(CARD) }
         resultText = TextView(this).apply {
             text = ""
@@ -178,30 +179,22 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Cancel any previous run
         runJob?.cancel()
-
         setStatus("Running…")
         resultText.text = ""
         copyButton.isEnabled = false
         runButton.isEnabled = false
 
         runJob = scope.launch {
-            val (stdout, stderr, exitCode) = exec(args)
-            val output = buildString {
-                if (stdout.isNotEmpty()) append(stdout)
-                if (stderr.isNotEmpty()) {
-                    if (stdout.isNotEmpty()) append("\n")
-                    append("── stderr ──\n").append(stderr)
-                }
+            val result = try {
+                executeCurl(args)
+            } catch (e: Exception) {
+                "ERROR: ${e.javaClass.simpleName}: ${e.message}"
             }
             withContext(Dispatchers.Main) {
-                resultText.text = output.ifEmpty { "(no output)" }
-                copyButton.isEnabled = output.isNotEmpty()
+                resultText.text = result.ifEmpty { "(empty response)" }
+                copyButton.isEnabled = result.isNotEmpty()
                 runButton.isEnabled = true
-                val label = if (exitCode == 0) "Done (exit 0)" else "Exit code $exitCode"
-                setStatus(label, error = exitCode != 0)
-                // scroll output to top
                 scrollView.scrollTo(0, 0)
             }
         }
@@ -225,53 +218,97 @@ class MainActivity : ComponentActivity() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Core: exec
+    //  Core: parse curl args → HttpURLConnection
     // ─────────────────────────────────────────────────────────────────────────
 
-    private data class ExecResult(val stdout: String, val stderr: String, val exitCode: Int)
+    private fun executeCurl(args: List<String>): String {
+        var method = "GET"
+        var url: String? = null
+        val headers = mutableListOf<Pair<String, String>>()
+        var body: String? = null
+        var followRedirects = true
 
-    private fun exec(args: List<String>): ExecResult {
-        return try {
-            val process = ProcessBuilder(args)
-                .redirectErrorStream(false)
-                .start()
-
-            // Read stdout and stderr concurrently to avoid deadlock
-            var stdout = ""
-            var stderr = ""
-            val stdoutThread = Thread { stdout = process.inputStream.bufferedReader().readText() }
-            val stderrThread = Thread { stderr = process.errorStream.bufferedReader().readText() }
-            stdoutThread.start(); stderrThread.start()
-            stdoutThread.join(); stderrThread.join()
-
-            val exit = process.waitFor()
-            ExecResult(stdout, stderr, exit)
-        } catch (e: Exception) {
-            ExecResult("", "Failed to run process: ${e.message}", -1)
+        var i = 1 // skip "curl"
+        while (i < args.size) {
+            when (args[i]) {
+                "-X", "--request" -> { method = args[++i] }
+                "-H", "--header"  -> {
+                    val h = args[++i]
+                    val colon = h.indexOf(':')
+                    if (colon > 0) headers.add(h.substring(0, colon).trim() to h.substring(colon + 1).trim())
+                }
+                "-d", "--data", "--data-raw", "--data-ascii", "--data-binary" -> {
+                    body = args[++i]
+                    if (method == "GET") method = "POST"
+                }
+                "-u", "--user" -> {
+                    val encoded = android.util.Base64.encodeToString(args[++i].toByteArray(), android.util.Base64.NO_WRAP)
+                    headers.add("Authorization" to "Basic $encoded")
+                }
+                "-L", "--location"    -> { followRedirects = true }
+                "--no-location"       -> { followRedirects = false }
+                "-G", "--get"         -> { method = "GET" }
+                "-I", "--head"        -> { method = "HEAD" }
+                "-s", "--silent",
+                "-v", "--verbose",
+                "-k", "--insecure",
+                "--compressed"        -> { /* no-op */ }
+                "-o", "--output"      -> { i++ /* skip filename */ }
+                else -> {
+                    val a = args[i]
+                    if (!a.startsWith("-") && url == null) url = a
+                }
+            }
+            i++
         }
+
+        if (url == null) return "ERROR: No URL found in command"
+
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = method
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 30_000
+        conn.instanceFollowRedirects = followRedirects
+        conn.doInput = true
+
+        for ((k, v) in headers) conn.setRequestProperty(k, v)
+
+        if (body != null) {
+            conn.doOutput = true
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
+        }
+
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+
+        val respHeaders = buildString {
+            append("HTTP $code ${conn.responseMessage}\n")
+            conn.headerFields.entries
+                .filter { it.key != null }
+                .forEach { (k, v) -> append("$k: ${v.joinToString(", ")}\n") }
+        }
+
+        conn.disconnect()
+        setStatus("HTTP $code ${conn.responseMessage}", error = code >= 400)
+        return "$respHeaders\n$responseBody"
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Helpers
+    //  Shell-style argument parser
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Minimal shell-style argument parser.
-     * Handles single/double quoted strings and backslash-escaped spaces.
-     * Does NOT invoke a shell — safe from injection.
-     */
     private fun parseCurlArgs(input: String): List<String> {
         val args = mutableListOf<String>()
         val current = StringBuilder()
         var i = 0
-        // Strip leading 'curl ' if pasted with it; we re-add programmatically
         val s = input.trimStart().replace("\\\n", " ")
         while (i < s.length) {
             when {
                 s[i] == '\'' -> {
                     i++
                     while (i < s.length && s[i] != '\'') { current.append(s[i]); i++ }
-                    i++ // closing quote
+                    i++
                 }
                 s[i] == '"' -> {
                     i++
@@ -281,9 +318,7 @@ class MainActivity : ComponentActivity() {
                     }
                     i++
                 }
-                s[i] == '\\' && i + 1 < s.length -> {
-                    i++; current.append(s[i]); i++
-                }
+                s[i] == '\\' && i + 1 < s.length -> { i++; current.append(s[i]); i++ }
                 s[i].isWhitespace() -> {
                     if (current.isNotEmpty()) { args.add(current.toString()); current.clear() }
                     i++
@@ -295,16 +330,16 @@ class MainActivity : ComponentActivity() {
         return args
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  View helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
     private fun setStatus(msg: String, error: Boolean = false) {
         runOnUiThread {
             statusText.text = msg
             statusText.setTextColor(if (error) RED else MUTED)
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  View factory helpers
-    // ─────────────────────────────────────────────────────────────────────────
 
     private fun button(label: String, bg: Int, onClick: () -> Unit) = Button(this).apply {
         text = label
