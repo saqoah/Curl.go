@@ -13,6 +13,8 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.*
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
 
@@ -29,6 +31,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var runButton: Button
     private lateinit var clearButton: Button
     private lateinit var copyButton: Button
+    private lateinit var prettyToggle: Button
     private lateinit var resultText: TextView
     private lateinit var statusText: TextView
     private lateinit var scrollView: ScrollView
@@ -36,6 +39,8 @@ class MainActivity : ComponentActivity() {
     // ── State ─────────────────────────────────────────────────────────────────
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var runJob: Job? = null
+    private var rawOutput: String = ""
+    private var isPretty: Boolean = true
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Lifecycle
@@ -129,7 +134,7 @@ class MainActivity : ComponentActivity() {
         }
         layout.addView(statusText, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(10)))
 
-        // Result label + copy button
+        // Result label + copy + pretty toggle
         val resultHeader = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         resultHeader.addView(
             TextView(this).apply {
@@ -140,11 +145,15 @@ class MainActivity : ComponentActivity() {
             },
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
         )
+        prettyToggle = button("JSON ✦", Color.parseColor("#1A3A2A")) { onPrettyToggle() }.apply {
+            textSize = 11f
+        }
         copyButton = button("Copy", CARD) { onCopyPressed() }.apply {
             textSize = 11f
             isEnabled = false
         }
-        resultHeader.addView(copyButton, LinearLayout.LayoutParams(dp(72), dp(32)))
+        resultHeader.addView(prettyToggle, LinearLayout.LayoutParams(dp(80), dp(32)).apply { rightMargin = dp(6) })
+        resultHeader.addView(copyButton,   LinearLayout.LayoutParams(dp(72), dp(32)))
         layout.addView(resultHeader, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(6)))
 
         // Result output (scrollable independently)
@@ -178,16 +187,18 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Cancel any previous run
         runJob?.cancel()
-
         setStatus("Running…")
         resultText.text = ""
+        rawOutput = ""
         copyButton.isEnabled = false
         runButton.isEnabled = false
 
         runJob = scope.launch {
+            val startMs = System.currentTimeMillis()
             val (stdout, stderr, exitCode) = exec(args)
+            val elapsed = System.currentTimeMillis() - startMs
+
             val output = buildString {
                 if (stdout.isNotEmpty()) append(stdout)
                 if (stderr.isNotEmpty()) {
@@ -195,13 +206,14 @@ class MainActivity : ComponentActivity() {
                     append("── stderr ──\n").append(stderr)
                 }
             }
+
             withContext(Dispatchers.Main) {
-                resultText.text = output.ifEmpty { "(no output)" }
+                rawOutput = output
                 copyButton.isEnabled = output.isNotEmpty()
                 runButton.isEnabled = true
-                val label = if (exitCode == 0) "Done (exit 0)" else "Exit code $exitCode"
+                val label = if (exitCode == 0) "Done  ${elapsed}ms" else "Exit $exitCode  ${elapsed}ms"
                 setStatus(label, error = exitCode != 0)
-                // scroll output to top
+                showOutput()
                 scrollView.scrollTo(0, 0)
             }
         }
@@ -211,6 +223,7 @@ class MainActivity : ComponentActivity() {
         runJob?.cancel()
         curlInput.setText("")
         resultText.text = ""
+        rawOutput = ""
         copyButton.isEnabled = false
         runButton.isEnabled = true
         setStatus("Ready")
@@ -293,6 +306,47 @@ class MainActivity : ComponentActivity() {
         }
         if (current.isNotEmpty()) args.add(current.toString())
         return args
+    }
+
+    private fun onPrettyToggle() {
+        isPretty = !isPretty
+        prettyToggle.setBackgroundColor(
+            if (isPretty) Color.parseColor("#1A3A2A") else CARD
+        )
+        showOutput()
+    }
+
+    private fun showOutput() {
+        if (rawOutput.isEmpty()) { resultText.text = "(no output)"; return }
+        resultText.text = if (isPretty) prettyPrintJson(rawOutput) else rawOutput
+    }
+
+    /**
+     * If the output contains JSON (anywhere after non-JSON prefix like stderr lines),
+     * find the first { or [ and pretty-print from there.
+     * Falls back to raw if parsing fails.
+     */
+    private fun prettyPrintJson(raw: String): String {
+        val jsonStart = raw.indexOfFirst { it == '{' || it == '[' }
+        if (jsonStart == -1) return raw
+        val prefix = if (jsonStart > 0) raw.substring(0, jsonStart) else ""
+        val jsonPart = raw.substring(jsonStart)
+        return try {
+            val pretty = when {
+                jsonPart.trimStart().startsWith("{") -> {
+                    val obj = org.json.JSONObject(jsonPart)
+                    obj.toString(2)
+                }
+                jsonPart.trimStart().startsWith("[") -> {
+                    val arr = org.json.JSONArray(jsonPart)
+                    arr.toString(2)
+                }
+                else -> return raw
+            }
+            prefix + pretty
+        } catch (e: Exception) {
+            raw // not valid JSON, show as-is
+        }
     }
 
     private fun setStatus(msg: String, error: Boolean = false) {
