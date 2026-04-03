@@ -7,7 +7,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.*
@@ -147,7 +146,7 @@ class MainActivity : ComponentActivity() {
         )
 
         aiPromptInput = EditText(this).apply {
-            hint = "e.g., GET https://api.github.com/users/octocat with Authorization header"
+            hint = "e.g., 'GET https://api.github.com/users/octocat with Authorization header', 'Post JSON to httpbin.org/test with content-type application/json'"
             setTextColor(WHITE)
             setHintTextColor(Color.parseColor("#555555"))
             setBackgroundColor(CARD)
@@ -309,6 +308,7 @@ class MainActivity : ComponentActivity() {
                     setStatus("✓ cURL generated! Press Run to execute")
                     generateButton.isEnabled = true
                     generateButton.text = "✨ Generate cURL Command"
+                    // Auto scroll to manual section
                     curlInput.requestFocus()
                 }
             } catch (e: Exception) {
@@ -331,16 +331,16 @@ class MainActivity : ComponentActivity() {
                     requestMethod = "POST"
                     setRequestProperty("Authorization", "Bearer $apiKey")
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("HTTP-Referer", "https://localhost")
+                    setRequestProperty("HTTP-Referer", "https://localhost") // Required by OpenRouter
                     setRequestProperty("X-Title", "cURL Runner AI")
                     doOutput = true
                     connectTimeout = 30000
-                    readTimeout = 60000
+                    readTimeout = 60000 // AI might take time
                 }
 
                 val jsonBody = JSONObject().apply {
                     put("model", OPENROUTER_MODEL)
-                    put("temperature", 0.1)
+                    put("temperature", 0.1) // Low temp for consistent formatting
                     put("messages", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "system")
@@ -378,9 +378,9 @@ class MainActivity : ComponentActivity() {
                     .getString("content")
                     .trim()
 
-                // Clean up markdown
+                // Aggressive cleanup of markdown and quotes
                 content
-                    .replace(Regex("```[a-zA-Z]*"), "")
+                    .replace("""```[a-z]*""".toRegex(), "")
                     .replace("```", "")
                     .replace("`", "")
                     .lines()
@@ -424,10 +424,8 @@ class MainActivity : ComponentActivity() {
             val output = buildString {
                 if (stdout.isNotEmpty()) append(stdout)
                 if (stderr.isNotEmpty()) {
-                    if (stdout.isNotEmpty()) append("
-")
-                    append("── stderr ──
-").append(stderr)
+                    if (stdout.isNotEmpty()) append("\n")
+                    append("── stderr ──\n").append(stderr)
                 }
             }
 
@@ -473,6 +471,7 @@ class MainActivity : ComponentActivity() {
                 .redirectErrorStream(false)
                 .start()
 
+            // Read stdout and stderr concurrently to avoid deadlock
             var stdout = ""
             var stderr = ""
             val stdoutThread = Thread { stdout = process.inputStream.bufferedReader().readText() }
@@ -495,24 +494,24 @@ class MainActivity : ComponentActivity() {
         val args = mutableListOf<String>()
         val current = StringBuilder()
         var i = 0
-        val s = input.trimStart().replace("\
-", " ")
+        // Correctly handle line continuation replacements
+        val s = input.trimStart().replace("\\\n", " ")
         while (i < s.length) {
             when {
-                s[i] == ''' -> {
+                s[i] == '\'' -> {
                     i++
-                    while (i < s.length && s[i] != ''') { current.append(s[i]); i++ }
+                    while (i < s.length && s[i] != '\'') { current.append(s[i]); i++ }
                     i++
                 }
                 s[i] == '"' -> {
                     i++
                     while (i < s.length && s[i] != '"') {
-                        if (s[i] == '\' && i + 1 < s.length) { i++ }
+                        if (s[i] == '\\' && i + 1 < s.length) { i++ }
                         current.append(s[i]); i++
                     }
                     i++
                 }
-                s[i] == '\' && i + 1 < s.length -> {
+                s[i] == '\\' && i + 1 < s.length -> {
                     i++; current.append(s[i]); i++
                 }
                 s[i].isWhitespace() -> {
