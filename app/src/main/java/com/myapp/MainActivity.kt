@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.*
@@ -146,7 +147,7 @@ class MainActivity : ComponentActivity() {
         )
 
         aiPromptInput = EditText(this).apply {
-            hint = "e.g., 'GET https://api.github.com/users/octocat with Authorization header', 'Post JSON to httpbin.org/test with content-type application/json'"
+            hint = "e.g., GET https://api.github.com/users/octocat with Authorization header"
             setTextColor(WHITE)
             setHintTextColor(Color.parseColor("#555555"))
             setBackgroundColor(CARD)
@@ -308,7 +309,6 @@ class MainActivity : ComponentActivity() {
                     setStatus("✓ cURL generated! Press Run to execute")
                     generateButton.isEnabled = true
                     generateButton.text = "✨ Generate cURL Command"
-                    // Auto scroll to manual section
                     curlInput.requestFocus()
                 }
             } catch (e: Exception) {
@@ -331,16 +331,16 @@ class MainActivity : ComponentActivity() {
                     requestMethod = "POST"
                     setRequestProperty("Authorization", "Bearer $apiKey")
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("HTTP-Referer", "https://localhost") // Required by OpenRouter
+                    setRequestProperty("HTTP-Referer", "https://localhost")
                     setRequestProperty("X-Title", "cURL Runner AI")
                     doOutput = true
                     connectTimeout = 30000
-                    readTimeout = 60000 // AI might take time
+                    readTimeout = 60000
                 }
 
                 val jsonBody = JSONObject().apply {
                     put("model", OPENROUTER_MODEL)
-                    put("temperature", 0.1) // Low temp for consistent formatting
+                    put("temperature", 0.1)
                     put("messages", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "system")
@@ -378,9 +378,9 @@ class MainActivity : ComponentActivity() {
                     .getString("content")
                     .trim()
 
-                // Aggressive cleanup of markdown and quotes
+                // Clean up markdown
                 content
-                    .replace("""```[a-z]*""".toRegex(), "")
+                    .replace(Regex("```[a-zA-Z]*"), "")
                     .replace("```", "")
                     .replace("`", "")
                     .lines()
@@ -473,7 +473,6 @@ class MainActivity : ComponentActivity() {
                 .redirectErrorStream(false)
                 .start()
 
-            // Read stdout and stderr concurrently to avoid deadlock
             var stdout = ""
             var stderr = ""
             val stdoutThread = Thread { stdout = process.inputStream.bufferedReader().readText() }
