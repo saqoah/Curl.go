@@ -15,8 +15,15 @@ import androidx.core.view.WindowCompat
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
+
+    // ── Config ───────────────────────────────────────────────────────────────
+    // UPDATED: Using qwen 3.6 free tier model
+    private val OPENROUTER_MODEL = "qwen/qwen3.6-plus:free"
+    private val OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
     // ── Colors ────────────────────────────────────────────────────────────────
     private val BG     = Color.parseColor("#0F0F0F")
@@ -25,8 +32,15 @@ class MainActivity : ComponentActivity() {
     private val WHITE  = Color.WHITE
     private val MUTED  = Color.parseColor("#888888")
     private val RED    = Color.parseColor("#CF6679")
+    private val BLUE   = Color.parseColor("#2D5AF5")
 
     // ── Views ─────────────────────────────────────────────────────────────────
+    // AI Section
+    private lateinit var apiKeyInput: EditText
+    private lateinit var aiPromptInput: EditText
+    private lateinit var generateButton: Button
+
+    // Manual cURL Section
     private lateinit var curlInput: EditText
     private lateinit var runButton: Button
     private lateinit var clearButton: Button
@@ -72,16 +86,103 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(16), dp(48), dp(16), dp(16))
         }
 
-        // Header
+        // ═══════════════════════════════════════════════════════════════════
+        // AI GENERATOR SECTION
+        // ═══════════════════════════════════════════════════════════════════
         layout.addView(
             TextView(this).apply {
-                text = "cURL Runner"
-                setTextColor(WHITE)
+                text = "✨ AI cURL Generator"
+                setTextColor(ACCENT)
                 textSize = 20f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 gravity = Gravity.CENTER
             },
-            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(20))
+            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(8))
+        )
+
+        layout.addView(
+            TextView(this).apply {
+                text = "Powered by OpenRouter (Qwen 3.6 :free)"
+                setTextColor(MUTED)
+                textSize = 11f
+                gravity = Gravity.CENTER
+            },
+            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(16))
+        )
+
+        // API Key Input
+        layout.addView(
+            TextView(this).apply {
+                text = "OpenRouter API Key (sk-or-v1-...)"
+                setTextColor(MUTED)
+                textSize = 11f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            },
+            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(6))
+        )
+
+        apiKeyInput = EditText(this).apply {
+            hint = "Paste your API key from openrouter.ai"
+            setTextColor(WHITE)
+            setHintTextColor(Color.parseColor("#555555"))
+            setBackgroundColor(CARD)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or 
+                       android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        layout.addView(apiKeyInput, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(12)))
+
+        // Prompt Input
+        layout.addView(
+            TextView(this).apply {
+                text = "Describe your request"
+                setTextColor(MUTED)
+                textSize = 11f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            },
+            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(6))
+        )
+
+        aiPromptInput = EditText(this).apply {
+            hint = "e.g., 'GET https://api.github.com/users/octocat with Authorization header', 'Post JSON to httpbin.org/test with content-type application/json'"
+            setTextColor(WHITE)
+            setHintTextColor(Color.parseColor("#555555"))
+            setBackgroundColor(CARD)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            textSize = 12f
+            typeface = Typeface.DEFAULT
+            minLines = 3
+            maxLines = 6
+            isSingleLine = false
+            gravity = Gravity.TOP or Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        layout.addView(aiPromptInput, lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(10)))
+
+        // Generate Button
+        generateButton = button("✨ Generate cURL Command", BLUE) { onGeneratePressed() }
+        layout.addView(generateButton, lp(MATCH_PARENT, dp(48), bm = dp(8)))
+
+        // Divider
+        layout.addView(
+            View(this).apply { setBackgroundColor(Color.parseColor("#333333")) },
+            lp(MATCH_PARENT, dp(1), bm = dp(24))
+        )
+
+        // ═══════════════════════════════════════════════════════════════════
+        // MANUAL cURL SECTION (Existing)
+        // ═══════════════════════════════════════════════════════════════════
+        layout.addView(
+            TextView(this).apply {
+                text = "Manual cURL"
+                setTextColor(WHITE)
+                textSize = 16f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            },
+            lp(MATCH_PARENT, WRAP_CONTENT, bm = dp(12))
         )
 
         // Input label
@@ -174,7 +275,128 @@ class MainActivity : ComponentActivity() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Actions
+    //  AI Actions
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun onGeneratePressed() {
+        val apiKey = apiKeyInput.text.toString().trim()
+        val prompt = aiPromptInput.text.toString().trim()
+
+        if (apiKey.isEmpty()) {
+            setStatus("Enter OpenRouter API key first", error = true)
+            return
+        }
+        if (!apiKey.startsWith("sk-or-v1-")) {
+            setStatus("API key should start with sk-or-v1-", error = true)
+            return
+        }
+        if (prompt.isEmpty()) {
+            setStatus("Enter a description first", error = true)
+            return
+        }
+
+        runJob?.cancel()
+        setStatus("Asking Qwen 3.6...")
+        generateButton.isEnabled = false
+        generateButton.text = "Generating..."
+
+        runJob = scope.launch {
+            try {
+                val generatedCurl = generateCurlWithAI(apiKey, prompt)
+                withContext(Dispatchers.Main) {
+                    curlInput.setText(generatedCurl)
+                    setStatus("✓ cURL generated! Press Run to execute")
+                    generateButton.isEnabled = true
+                    generateButton.text = "✨ Generate cURL Command"
+                    // Auto scroll to manual section
+                    curlInput.requestFocus()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    setStatus("AI Error: ${e.message}", error = true)
+                    generateButton.isEnabled = true
+                    generateButton.text = "✨ Generate cURL Command"
+                }
+            }
+        }
+    }
+
+    private suspend fun generateCurlWithAI(apiKey: String, userPrompt: String): String {
+        return withContext(Dispatchers.IO) {
+            val url = URL(OPENROUTER_URL)
+            val connection = url.openConnection() as HttpURLConnection
+
+            try {
+                connection.apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("HTTP-Referer", "https://localhost") // Required by OpenRouter
+                    setRequestProperty("X-Title", "cURL Runner AI")
+                    doOutput = true
+                    connectTimeout = 30000
+                    readTimeout = 60000 // AI might take time
+                }
+
+                val jsonBody = JSONObject().apply {
+                    put("model", OPENROUTER_MODEL)
+                    put("temperature", 0.1) // Low temp for consistent formatting
+                    put("messages", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "system")
+                            put("content", "You are a precise cURL command generator. Given a user request, output ONLY the raw cURL command, nothing else. No markdown code blocks, no explanations, no backticks. Start with 'curl'. Ensure proper header escaping with -H flags. Use -X for methods other than GET.")
+                        })
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            put("content", userPrompt)
+                        })
+                    })
+                }
+
+                connection.outputStream.use { os ->
+                    os.write(jsonBody.toString().toByteArray(Charsets.UTF_8))
+                }
+
+                val responseCode = connection.responseCode
+                if (responseCode != 200) {
+                    val errorText = connection.errorStream?.bufferedReader()?.readText() 
+                        ?: "HTTP $responseCode"
+                    throw Exception("OpenRouter error: $errorText")
+                }
+
+                val response = connection.inputStream.bufferedReader().readText()
+                val jsonResponse = JSONObject(response)
+
+                if (jsonResponse.has("error")) {
+                    throw Exception(jsonResponse.getJSONObject("error").getString("message"))
+                }
+
+                val content = jsonResponse
+                    .getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message")
+                    .getString("content")
+                    .trim()
+
+                // Aggressive cleanup of markdown and quotes
+                content
+                    .replace("""```[a-z]*""".toRegex(), "")
+                    .replace("```", "")
+                    .replace("`", "")
+                    .lines()
+                    .joinToString(" ") { it.trim() }
+                    .trim()
+                    .removePrefix("curl")
+                    .let { if (it.isNotEmpty()) "curl $it" else "curl $content" }
+
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Existing Actions (Unchanged)
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun onRunPressed() {
@@ -202,8 +424,10 @@ class MainActivity : ComponentActivity() {
             val output = buildString {
                 if (stdout.isNotEmpty()) append(stdout)
                 if (stderr.isNotEmpty()) {
-                    if (stdout.isNotEmpty()) append("\n")
-                    append("── stderr ──\n").append(stderr)
+                    if (stdout.isNotEmpty()) append("
+")
+                    append("── stderr ──
+").append(stderr)
                 }
             }
 
@@ -268,33 +492,28 @@ class MainActivity : ComponentActivity() {
     //  Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Minimal shell-style argument parser.
-     * Handles single/double quoted strings and backslash-escaped spaces.
-     * Does NOT invoke a shell — safe from injection.
-     */
     private fun parseCurlArgs(input: String): List<String> {
         val args = mutableListOf<String>()
         val current = StringBuilder()
         var i = 0
-        // Strip leading 'curl ' if pasted with it; we re-add programmatically
-        val s = input.trimStart().replace("\\\n", " ")
+        val s = input.trimStart().replace("\
+", " ")
         while (i < s.length) {
             when {
-                s[i] == '\'' -> {
+                s[i] == ''' -> {
                     i++
-                    while (i < s.length && s[i] != '\'') { current.append(s[i]); i++ }
-                    i++ // closing quote
+                    while (i < s.length && s[i] != ''') { current.append(s[i]); i++ }
+                    i++
                 }
                 s[i] == '"' -> {
                     i++
                     while (i < s.length && s[i] != '"') {
-                        if (s[i] == '\\' && i + 1 < s.length) { i++ }
+                        if (s[i] == '\' && i + 1 < s.length) { i++ }
                         current.append(s[i]); i++
                     }
                     i++
                 }
-                s[i] == '\\' && i + 1 < s.length -> {
+                s[i] == '\' && i + 1 < s.length -> {
                     i++; current.append(s[i]); i++
                 }
                 s[i].isWhitespace() -> {
@@ -321,11 +540,6 @@ class MainActivity : ComponentActivity() {
         resultText.text = if (isPretty) prettyPrintJson(rawOutput) else rawOutput
     }
 
-    /**
-     * If the output contains JSON (anywhere after non-JSON prefix like stderr lines),
-     * find the first { or [ and pretty-print from there.
-     * Falls back to raw if parsing fails.
-     */
     private fun prettyPrintJson(raw: String): String {
         val jsonStart = raw.indexOfFirst { it == '{' || it == '[' }
         if (jsonStart == -1) return raw
@@ -345,7 +559,7 @@ class MainActivity : ComponentActivity() {
             }
             prefix + pretty
         } catch (e: Exception) {
-            raw // not valid JSON, show as-is
+            raw
         }
     }
 
